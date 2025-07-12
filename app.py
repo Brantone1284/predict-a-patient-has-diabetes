@@ -1,138 +1,105 @@
-import pandas as pdimport numpy as npfrom sklearn.model_selection import train_test_splitfrom sklearn.preprocessing import StandardScalerfrom sklearn.metrics import accuracy_score, classification_reportimport tensorflow as tffrom tensorflow.keras.models import Sequential, load_modelfrom tensorflow.keras.layers import Dense, Dropoutfrom tensorflow.keras.callbacks import EarlyStoppingimport keras_tuner as ktimport joblibimport shapimport streamlit as stimport matplotlib.pyplot as pltimport os
-Function to train and save the model
-def train_model():    # Load and preprocess the dataset    data = pd.read_csv('diabetes.csv')    columns_with_zeros = ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI']    data[columns_with_zeros] = data[columns_with_zeros].replace(0, np.nan)    data[columns_with_zeros] = data[columns_with_zeros].fillna(data[columns_with_zeros].median())
-X = data.drop('Outcome', axis=1)
-y = data['Outcome']
+import streamlit as st
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+import joblib
+import shap
+import matplotlib.pyplot as plt
 
-# Scale the features
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+# Set page configuration
+st.set_page_config(page_title="Diabetes Prediction App", page_icon="🩺", layout="wide")
 
-# Split the dataset
-X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+# Title and description
+st.title("Diabetes Prediction App")
+st.markdown("""
+This app uses a trained neural network to predict the likelihood of diabetes based on input features.
+Enter the patient details below and click 'Predict' to see the results.
+""")
 
-# Define hypermodel
-def build_model(hp):
-    model = Sequential()
-    model.add(Dense(
-        units=hp.Int('units_1', min_value=32, max_value=128, step=16),
-        activation='relu',
-        input_shape=(X_train.shape[1],)
-    ))
-    model.add(Dropout(hp.Float('dropout_1', min_value=0.0, max_value=0.5, step=0.1)))
-    for i in range(hp.Int('num_layers', 1, 3)):
-        model.add(Dense(
-            units=hp.Int(f'units_{i+2}', min_value=16, max_value=64, step=16),
-            activation='relu'
-        ))
-        model.add(Dropout(hp.Float(f'dropout_{i+2}', min_value=0.0, max_value=0.5, step=0.1)))
-    model.add(Dense(1, activation='sigmoid'))
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(
-            hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='log')
-        ),
-        loss='binary_crossentropy',
-        metrics=['accuracy']
-    )
-    return model
+# Load the trained model and scaler
+@st.cache_resource
+def load_model_and_scaler():
+    model = tf.keras.models.load_model('diabetes_tensorflow_best_model.h5')
+    scaler = joblib.load('scaler.pkl')
+    return model, scaler
 
-# Perform hyperparameter tuning
-tuner = kt.Hyperband(
-    build_model,
-    objective='val_accuracy',
-    max_epochs=50,
-    factor=3,
-    directory='tuner_dir',
-    project_name='diabetes_tuning'
-)
+try:
+    model, scaler = load_model_and_scaler()
+except FileNotFoundError:
+    st.error("Error: Model or scaler file not found. Please ensure 'diabetes_tensorflow_best_model.h5' and 'scaler.pkl' are in the same directory.")
+    st.stop()
 
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-tuner.search(X_train, y_train, validation_data=(X_val, y_val), epochs=50, callbacks=[early_stopping])
+# Define feature names (based on the diabetes dataset)
+feature_names = ['Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age']
 
-# Get and train the best model
-best_model = tuner.get_best_models(num_models=1)[0]
-best_model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=100, batch_size=32, 
-               callbacks=[early_stopping], verbose=1)
+# Create input fields for user data
+st.subheader("Enter Patient Details")
+cols = st.columns(4)
+user_input = {}
+for i, feature in enumerate(feature_names):
+    with cols[i % 4]:
+        if feature == 'Pregnancies':
+            user_input[feature] = st.number_input(feature, min_value=0, max_value=20, value=0, step=1)
+        elif feature == 'Age':
+            user_input[feature] = st.number_input(feature, min_value=0, max_value=120, value=30, step=1)
+        elif feature in ['Glucose', 'BloodPressure', 'Insulin']:
+            user_input[feature] = st.number_input(feature, min_value=0.0, max_value=500.0, value=100.0, step=0.1)
+        else:
+            user_input[feature] = st.number_input(feature, min_value=0.0, max_value=100.0, value=0.0, step=0.1)
 
-# Evaluate the model
-y_pred = (best_model.predict(X_test) > 0.5).astype(int)
-st.write("Model Performance on Test Set:")
-st.write(f"Accuracy: {accuracy_score(y_test, y_pred):.2f}")
-st.write("Classification Report:")
-st.write(classification_report(y_test, y_pred))
+# Convert user input to DataFrame
+input_df = pd.DataFrame([user_input], columns=feature_names)
 
-# Save model and scaler
-best_model.save('diabetes_tensorflow_best_model.h5')
-joblib.dump(scaler, 'scaler.pkl')
-st.write("Model and scaler saved successfully.")
+# Scale the input data
+input_scaled = scaler.transform(input_df)
 
-Streamlit app
-def main():    st.title("Diabetes Prediction App")    st.write("Enter patient details to predict diabetes risk.")
-# Check if model and scaler exist, else train the model
-model_path = 'diabetes_tensorflow_best_model.h5'
-scaler_path = 'scaler.pkl'
-
-if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-    st.write("Training model... This may take a few minutes.")
-    train_model()
-
-# Load model and scaler
-model = load_model(model_path)
-scaler = joblib.load(scaler_path)
-
-# Input fields for features
-st.subheader("Patient Data Input")
-pregnancies = st.number_input("Pregnancies", min_value=0, max_value=20, value=0)
-glucose = st.number_input("Glucose (mg/dL)", min_value=0.0, max_value=300.0, value=100.0)
-blood_pressure = st.number_input("Blood Pressure (mm Hg)", min_value=0.0, max_value=200.0, value=70.0)
-skin_thickness = st.number_input("Skin Thickness (mm)", min_value=0.0, max_value=100.0, value=20.0)
-insulin = st.number_input("Insulin (mu U/ml)", min_value=0.0, max_value=1000.0, value=80.0)
-bmi = st.number_input("BMI", min_value=0.0, max_value=70.0, value=30.0)
-dpf = st.number_input("Diabetes Pedigree Function", min_value=0.0, max_value=3.0, value=0.5)
-age = st.number_input("Age", min_value=0, max_value=120, value=30)
-
-# Prepare input data
-input_data = np.array([[pregnancies, glucose, blood_pressure, skin_thickness, insulin, bmi, dpf, age]])
-input_data_scaled = scaler.transform(input_data)
-
-# Predict
+# Predict button
 if st.button("Predict"):
-    prediction = (model.predict(input_data_scaled) > 0.5).astype(int)[0][0]
-    result = "Diabetic" if prediction == 1 else "Not Diabetic"
-    st.subheader("Prediction")
-    st.write(f"The patient is predicted to be: **{result}**")
-    
+    # Make prediction
+    prediction_proba = model.predict(input_scaled)[0][0]
+    prediction = 1 if prediction_proba > 0.5 else 0
+    probability = prediction_proba * 100
+
+    # Display prediction
+    st.subheader("Prediction Result")
+    if prediction == 1:
+        st.error(f"The model predicts a **high risk of diabetes** with {probability:.2f}% probability.")
+    else:
+        st.success(f"The model predicts a **low risk of diabetes** with {100 - probability:.2f}% probability.")
+
     # SHAP explanation
     st.subheader("Feature Importance (SHAP)")
-    explainer = shap.DeepExplainer(model, scaler.transform(pd.read_csv('diabetes.csv').drop('Outcome', axis=1)[:100]))
-    shap_values = explainer.shap_values(input_data_scaled)
+    explainer = shap.DeepExplainer(model, scaler.transform(pd.read_csv('diabetes.csv').drop('Outcome', axis=1).iloc[:100]))
+    shap_values = explainer.shap_values(input_scaled)
     
-    # Plot SHAP force plot
-    shap.initjs()
-    fig = shap.force_plot(explainer.expected_value[0], shap_values[0][0], input_data[0], 
-                         feature_names=['Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness', 
-                                       'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age'],
-                         matplotlib=True, show=False)
+    # Create SHAP summary plot
+    fig, ax = plt.subplots()
+    shap.summary_plot(shap_values[0], input_scaled, feature_names=feature_names, show=False)
     st.pyplot(fig)
+    plt.close()
 
-# Plot training history if model was trained
-if os.path.exists(model_path):
-    st.subheader("Training History")
-    history = model.fit(scaler.transform(pd.read_csv('diabetes.csv').drop('Outcome', axis=1)[:100]), 
-                       pd.read_csv('diabetes.csv')['Outcome'][:100], epochs=1, verbose=0)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-    ax1.plot(history.history['accuracy'], label='Training Accuracy')
-    ax1.set_title('Model Accuracy')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Accuracy')
-    ax1.legend()
-    ax2.plot(history.history['loss'], label='Training Loss')
-    ax2.set_title('Model Loss')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Loss')
-    ax2.legend()
-    plt.tight_layout()
-    st.pyplot(fig)
+# Optional: Display model performance (requires test data)
+st.subheader("Model Performance")
+if st.checkbox("Show model performance metrics"):
+    # Load test data (assuming diabetes.csv is available)
+    try:
+        data = pd.read_csv('diabetes.csv')
+        X = data.drop('Outcome', axis=1)
+        y = data['Outcome']
+        from sklearn.model_selection import train_test_split
+        _, X_temp, _, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
+        _, X_test, _, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+        X_test_scaled = scaler.transform(X_test)
+        y_pred = (model.predict(X_test_scaled) > 0.5).astype(int)
+        from sklearn.metrics import accuracy_score, classification_report
+        accuracy = accuracy_score(y_test, y_pred)
+        report = classification_report(y_test, y_pred, output_dict=True)
+        
+        st.write(f"**Test Accuracy**: {accuracy:.2f}")
+        st.write("**Classification Report**:")
+        st.json(report)
+    except FileNotFoundError:
+        st.warning("Cannot display performance metrics: 'diabetes.csv' not found.")
 
-if name == "main":    main()
+st.markdown("---")
+st.markdown("Built with Streamlit and TensorFlow. Model trained on the Pima Indians Diabetes Dataset.")
