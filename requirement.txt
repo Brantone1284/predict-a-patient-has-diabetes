@@ -1,1 +1,8 @@
-pip install streamlit pandas numpy tensorflow joblib scikit-learn shap matplotlib
+streamlit
+pandas
+numpy
+
+
+
+
+
